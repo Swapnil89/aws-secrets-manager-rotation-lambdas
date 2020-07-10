@@ -5,8 +5,7 @@ import boto3
 import json
 import logging
 import os
-import pg
-import pgdb
+import psycopg2
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -45,6 +44,7 @@ def lambda_handler(event, context):
         KeyError: If the secret json does not contain the expected keys
 
     """
+    logger.info("Starting Lambda Handler")
     arn = event['SecretId']
     token = event['ClientRequestToken']
     step = event['Step']
@@ -113,10 +113,8 @@ def create_secret(service_client, arn, token):
         get_secret_dict(service_client, arn, "AWSPENDING", token)
         logger.info("createSecret: Successfully retrieved secret for %s." % arn)
     except service_client.exceptions.ResourceNotFoundException:
-        # Get exclude characters from environment variable
-        exclude_characters = os.environ['EXCLUDE_CHARACTERS'] if 'EXCLUDE_CHARACTERS' in os.environ else ':/@"\'\\'
         # Generate a random password
-        passwd = service_client.get_random_password(ExcludeCharacters=exclude_characters)
+        passwd = service_client.get_random_password(ExcludeCharacters=':/@"\'\\')
         current_dict['password'] = passwd['RandomPassword']
 
         # Put the secret
@@ -159,8 +157,10 @@ def set_secret(service_client, arn, token):
     if not conn:
         # If both current and pending do not work, try previous
         try:
+            logger.info("setSecret: Trying using previous secret, unable to log into database with pending and current secret of secret arn %s" % arn)
             conn = get_connection(get_secret_dict(service_client, arn, "AWSPREVIOUS"))
         except service_client.exceptions.ResourceNotFoundException:
+            logger.exception("setSecret: Unable to find previous secret of secret arn %s" % arn)
             conn = None
 
     # If we still don't have a connection, raise a ValueError
@@ -259,7 +259,7 @@ def get_connection(secret_dict):
         secret_dict (dict): The Secret Dictionary
 
     Returns:
-        Connection: The pgdb.Connection object if successful. None otherwise
+        Connection: The psycopg2.Connection object if successful. None otherwise
 
     Raises:
         KeyError: If the secret json does not contain the expected keys
@@ -271,9 +271,20 @@ def get_connection(secret_dict):
 
     # Try to obtain a connection to the db
     try:
-        conn = pgdb.connect(host=secret_dict['host'], user=secret_dict['username'], password=secret_dict['password'], database=dbname, port=port, connect_timeout=5)
+        conn = psycopg2.connect(
+            host=secret_dict['host'],
+            user=secret_dict['username'],
+            password=secret_dict['password'],
+            database=dbname,
+            port=port,
+            connect_timeout=5,
+        )
         return conn
-    except pg.InternalError:
+    except psycopg2.Error:
+        logger.exception("Unable to open database connection")
+        return None
+    except:
+        logger.exception("Unknown error opening database connection")
         return None
 
 
